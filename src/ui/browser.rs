@@ -146,6 +146,7 @@ pub(super) struct ViewState {
     location_entry: gtk::Entry,
     columns_widget: gtk::Box,
     scroller: gtk::ScrolledWindow,
+    mode_stack: gtk::Stack,
     mode_views: RefCell<ModeViews>,
     columns: RefCell<Vec<ColumnView>>,
     hovered_column: Cell<Option<usize>>,
@@ -453,7 +454,8 @@ impl BrowserView {
         let source_generation = Rc::new(Cell::new(0u64));
         let multiple_selection = Rc::new(Cell::new(multiple));
         let mode_views = ModeViews::new(&scroller, browser.clone(), multiple_selection.clone());
-        overlay.set_child(Some(&mode_views.widget()));
+        let mode_stack = mode_views.widget();
+        overlay.set_child(Some(&mode_stack));
         let state = Rc::new(ViewState {
             overlay,
             location_control,
@@ -465,6 +467,7 @@ impl BrowserView {
             location_entry,
             columns_widget,
             scroller,
+            mode_stack,
             mode_views: RefCell::new(mode_views),
             columns: RefCell::new(Vec::new()),
             hovered_column: Cell::new(None),
@@ -798,21 +801,14 @@ impl BrowserView {
     }
 
     pub fn view_mode(&self) -> BrowserMode {
-        self.state.mode_views.borrow().mode()
+        view_mode_from_stack(&self.state.mode_stack)
     }
 
     pub fn connect_view_mode_changed(&self, handler: impl Fn(BrowserMode) + 'static) {
         self.state
-            .mode_views
-            .borrow()
-            .widget()
+            .mode_stack
             .connect_visible_child_name_notify(move |stack| {
-                let mode = match stack.visible_child_name().as_deref() {
-                    Some("icons") => BrowserMode::Icons,
-                    Some("list") => BrowserMode::List,
-                    _ => BrowserMode::Columns,
-                };
-                handler(mode);
+                handler(view_mode_from_stack(stack));
             });
     }
 
@@ -1879,6 +1875,14 @@ fn new_folder_destination_depth(
 
 fn single_pane_preview_reservation(width: i32) -> i32 {
     width.max(0) / 2
+}
+
+fn view_mode_from_stack(stack: &gtk::Stack) -> BrowserMode {
+    match stack.visible_child_name().as_deref() {
+        Some("icons") => BrowserMode::Icons,
+        Some("list") => BrowserMode::List,
+        _ => BrowserMode::Columns,
+    }
 }
 
 fn vim_focus_direction(key: gtk::gdk::Key) -> Option<gtk::DirectionType> {

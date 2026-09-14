@@ -191,3 +191,102 @@ fn directory_loading_grace_across_modes() {
         },
     );
 }
+
+#[test]
+fn view_mode_query_survives_reentrant_load_completion() {
+    crate::test_support::gtk_test(
+        "ui::browser::tests::loading::view_mode_query_survives_reentrant_load_completion",
+        || {
+            let root = tempfile::tempdir().expect("fixture directory");
+            for mode in [BrowserMode::Icons, BrowserMode::List] {
+                let source = Rc::new(HeldSource::default());
+                let view = BrowserView::new(source.clone(), PeekBehavior::default());
+                view.set_view_mode(mode);
+                let browser = view.browser();
+                browser.navigate(Location::local(root.path()));
+                let panes = stacks(&view.widget());
+                assert_page(&panes, "pending");
+                let queried = Rc::new(Cell::new(None::<BrowserMode>));
+                let ran_while_borrowed = Rc::new(Cell::new(false));
+                let weak = view.downgrade();
+                for stack in &panes {
+                    let queried = queried.clone();
+                    let ran_while_borrowed = ran_while_borrowed.clone();
+                    let weak = weak.clone();
+                    stack.connect_visible_child_name_notify(move |_| {
+                        let Some(view) = weak.upgrade() else {
+                            return;
+                        };
+                        let mode = view.view_mode();
+                        if view.state.mode_views.try_borrow().is_err() {
+                            ran_while_borrowed.set(true);
+                            queried.set(Some(mode));
+                        }
+                    });
+                }
+                source.batch(root.path());
+                source.finish();
+                assert!(
+                    ran_while_borrowed.get(),
+                    "pane stack notification must query view_mode while mode_views is borrowed"
+                );
+                assert_eq!(queried.get(), Some(mode));
+                settle();
+                assert_page(&panes, "content");
+                assert_eq!(view.view_mode(), mode);
+                browser.clear_observer();
+            }
+        },
+    );
+}
+
+#[test]
+fn view_mode_query_survives_held_mode_views_borrow() {
+    crate::test_support::gtk_test(
+        "ui::browser::tests::loading::view_mode_query_survives_held_mode_views_borrow",
+        || {
+            let view = BrowserView::new(Rc::new(HeldSource::default()), PeekBehavior::default());
+            for mode in [BrowserMode::Columns, BrowserMode::Icons, BrowserMode::List] {
+                view.set_view_mode(mode);
+                let _guard = view.state.mode_views.borrow_mut();
+                assert_eq!(view.view_mode(), mode);
+            }
+            view.browser().clear_observer();
+        },
+    );
+}
+
+#[test]
+fn view_mode_change_observer_matches_getter() {
+    crate::test_support::gtk_test(
+        "ui::browser::tests::loading::view_mode_change_observer_matches_getter",
+        || {
+            let view = BrowserView::new(Rc::new(HeldSource::default()), PeekBehavior::default());
+            assert_eq!(view.view_mode(), BrowserMode::Columns);
+            let observed = Rc::new(RefCell::new(Vec::new()));
+            let weak = view.downgrade();
+            view.connect_view_mode_changed({
+                let observed = observed.clone();
+                move |mode| {
+                    let view = weak.upgrade().expect("browser view");
+                    assert_eq!(view.view_mode(), mode);
+                    observed.borrow_mut().push(mode);
+                }
+            });
+            for mode in [BrowserMode::Icons, BrowserMode::List, BrowserMode::Columns] {
+                view.set_view_mode(mode);
+            }
+            assert_eq!(
+                *observed.borrow(),
+                [
+                    BrowserMode::Icons,
+                    BrowserMode::List,
+                    BrowserMode::Columns
+                ]
+            );
+            view.set_view_mode(BrowserMode::Columns);
+            assert_eq!(observed.borrow().len(), 3);
+            view.browser().clear_observer();
+        },
+    );
+}
